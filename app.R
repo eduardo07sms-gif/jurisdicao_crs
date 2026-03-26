@@ -7,8 +7,13 @@ library(geobr)
 library(sf)
 library(osrm)
 
-# No topo do arquivo que você vai mandar pro GitHub:
+# Carregar os dados que estão na mesma pasta
 dados <- readRDS("dados_app.rds")
+todos_municipios <- dados$todos_municipios
+df_final <- dados$df_final
+cr_mun_filtrado <- dados$cr_mun_filtrado
+malha_contornos <- dados$malha_contornos
+malha_estados <- dados$malha_estados
 
 # "Extrai" os objetos para o ambiente do R
 todos_municipios <- dados$todos_municipios
