@@ -9,20 +9,25 @@ MAX_WALK_KM <- 30.0
 MAX_RATIO   <- 3.0    
 CRS_METRICO <- 5880 
 
-PATH_ROD   <- "C:/Users/Eduardo/Documents/norte-260420-free.shp/gis_osm_roads_free_1.shp"
-PATH_HIDRO <- "C:/Users/Eduardo/Downloads/BaseHidroHidrovias/fc_hidro_hidrovia_antaq.shp"
-PATH_PORTOS <- "C:/Users/Eduardo/Downloads/BaseHidroPortos/BaseHidroPortos/BaseHidroPortos.shp"
+PATH_ROD   <- "C:/Users/eduardo.silva/Documents/norte-260420-free.shp/gis_osm_roads_free_1.shp"
+PATH_HIDRO <- "C:/Users/eduardo.silva/Documents/BaseHidroHidrovias/fc_hidro_hidrovia_antaq.shp"
+PATH_PORTOS <- "C:/Users/eduardo.silva/Documents/BaseHidroPortos/BaseHidroPortos/BaseHidroPortos.shp"
 
 # ==============================================================================
 # 2. CARREGAMENTO COM CACHE (AMAZÔNIA LEGAL 2022)
 # ==============================================================================
+library(igraph)
 library(sf)
 library(leaflet)
 library(tidyverse)
 library(geobr)
 library(sfnetworks)
 library(units)
+library(readr)
 
+cr_geocode <- st_read("cr_geocode 1.gpkg")
+cr_geocode <- cr_geocode %>%
+  filter(startsWith(sigla, "CR"))
 message("🛰️ Carregando Setores Censitários 2022...")
 
 if(!file.exists("setores_amazonia_2022.rds")) {
@@ -35,8 +40,13 @@ if(!file.exists("setores_amazonia_2022.rds")) {
 }
 
 sf_setores_pt <- setores_sf %>% st_centroid() %>% st_zm(drop = TRUE)
-sf_sedes <- cr_mun_final %>% st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
-  st_transform(CRS_METRICO) %>% st_zm(drop = TRUE)
+# Certifique-se de carregar o cr_geocode antes, ex: 
+# cr_geocode <- st_read("caminho_do_arquivo_se_for_gpkg_ou_shp") 
+# ou readRDS("caminho_se_for_rds")
+
+sf_sedes <- cr_geocode %>% 
+  st_transform(CRS_METRICO) %>% 
+  st_zm(drop = TRUE)
 
 # ==============================================================================
 # 3. CARREGAMENTO DAS MALHAS
@@ -114,26 +124,26 @@ setores_sf <- setores_sf %>%
   )
 
 # ==========================================================
-# FUNÇÃO DE LIMPEZA TOPOLÓGICA (FIX IGRAPH & SCOPE)
+# FUNÇÃO DE LIMPEZA TOPOLÓGICA (COM TOLERÂNCIA DE DISTÂNCIA)
 # ==========================================================
-limpar_enclaves_funai <- function(df_setores, sf_sedes, col_cr = "cr_nome") {
+limpar_enclaves_funai <- function(df_setores, sf_sedes, col_cr = "cr_nome", tolerancia_metros = 200) {
   
-  message("🔍 Iniciando limpeza de enclaves em 60k setores...")
+  message("🔍 Iniciando limpeza de enclaves com tolerância de pontes/rios...")
   
   # 1. IDENTIFICAR COMPONENTES CONECTADOS
   message("🔗 Calculando contiguidade por bloco...")
   
-  # Usamos split para garantir que o sf não se perca com a geometria
   lista_setores <- df_setores %>% group_split(!!sym(col_cr))
   
   df_processado <- lapply(lista_setores, function(sub_df) {
-    # v é a lista de adjacência (quem toca quem)
-    v <- st_touches(st_geometry(sub_df))
     
-    # FIX: graph_from_adj_list usa 'mode' em vez de 'directed'
+    # SOLUÇÃO AQUI: Em vez de st_touches, usamos st_is_within_distance.
+    # Isso cria uma "ponte" invisível sobre rios, estradas ou erros do IBGE
+    # de até 'tolerancia_metros' (ex: 200m).
+    v <- st_is_within_distance(st_geometry(sub_df), dist = tolerancia_metros)
+    
     g <- graph_from_adj_list(v, mode = "all")
     
-    # Criamos um ID de componente único
     sub_df$id_componente <- paste0(sub_df[[col_cr]][1], "_", components(g)$membership)
     return(sub_df)
   }) %>% bind_rows()
@@ -155,7 +165,7 @@ limpar_enclaves_funai <- function(df_setores, sf_sedes, col_cr = "cr_nome") {
     }
   }
   
-  # 3. REATRIBUIR ILHAS/ENCLAVES
+  # 3. REATRIBUIR ILHAS/ENCLAVES (AGORA DE FATO DESCONECTADAS)
   df_processado$is_ilha <- !df_processado$id_componente %in% continentes_validos
   
   n_ilhas <- sum(df_processado$is_ilha)
@@ -166,11 +176,9 @@ limpar_enclaves_funai <- function(df_setores, sf_sedes, col_cr = "cr_nome") {
   
   message(paste("🏝️ Reatribuindo", n_ilhas, "setores isolados..."))
   
-  # Separamos o que é bloco oficial (continente) do que é enclave (ilha)
   continentes <- df_processado %>% filter(!is_ilha)
   ilhas       <- df_processado %>% filter(is_ilha)
   
-  # Reatribuição rápida via vizinho mais próximo 'oficial'
   indices_vizinhos <- st_nearest_feature(ilhas, continentes)
   df_processado[[col_cr]][df_processado$is_ilha] <- continentes[[col_cr]][indices_vizinhos]
   
@@ -185,7 +193,7 @@ setores_ama_limpos <- limpar_enclaves_funai(setores_sf, sf_sedes)
 saveRDS(setores_ama_limpos, "setores_2022_final_regionalizados.rds")
 message("✅ Base salva! Renderizando mapa...")
 
-poligonos_mapa <- setores_sf %>% st_transform(4326) %>% select(code_tract, cr_nome, modal, horas)
+poligonos_mapa <- setores_ama_limpos %>% st_transform(4326) %>% select(code_tract, cr_nome, modal, horas)
 pal <- colorFactor("turbo", poligonos_mapa$cr_nome)
 
 leaflet(poligonos_mapa, options = leafletOptions(preferCanvas = TRUE)) %>%
